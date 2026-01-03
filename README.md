@@ -96,7 +96,7 @@ Images are saved locally and uploaded with the camera name as filename (e.g., `d
 ## License
 MIT License
 
-Copyright (c) 2026 Kris
+Copyright (c) 2026
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

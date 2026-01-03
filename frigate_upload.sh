@@ -3,46 +3,41 @@
 # Frigate Upload Script
 # This script reads the configuration file and uploads images from Frigate cameras
 
+VERSION="2.1"
 CONFIG_FILE="config.txt"
 
-# Spinner function for progress indication
-spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-}
-
-# Function to run command with spinner
-run_with_spinner() {
-    local cmd="$1"
-    local msg="$2"
-    echo -n "$msg"
-    eval "$cmd" > /dev/null 2>&1 &
-    local pid=$!
-    spinner $pid
-    wait $pid
-    local status=$?
-    if [ $status -eq 0 ]; then
-        echo "✓"
-    else
-        echo "✗"
-        return $status
-    fi
-}
-
-# Check if config file exists
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Configuration file '$CONFIG_FILE' not found. Please run the configuration script first."
-    exit 1
+# Help and version
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo "Frigate Upload v$VERSION"
+    echo "Downloads latest snapshots from Frigate cameras, adds watermarks, and uploads."
+    echo ""
+    echo "Usage: $0 [--help|-h] [--version|-v]"
+    echo ""
+    echo "Options:"
+    echo "  --help, -h     Show this help message"
+    echo "  --version, -v  Show version"
+    echo ""
+    echo "Run without options to start upload process."
+    exit 0
 fi
+
+if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then
+    echo "Frigate Upload v$VERSION"
+    exit 0
+fi
+
+# Dependency check
+echo "Checking dependencies..."
+deps=("curl" "ffmpeg")
+for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo "Error: $dep is required but not found."
+        exit 1
+    fi
+done
+echo "Dependencies OK."
+
+
 
 # Load configuration
 while IFS='=' read -r key value; do
@@ -122,11 +117,13 @@ upload_file() {
 
 # Process each camera
 IFS=',' read -ra CAMERA_ARRAY <<< "$CAMERAS"
+total_cameras=${#CAMERA_ARRAY[@]}
+current_camera=1
 for camera in "${CAMERA_ARRAY[@]}"; do
     # Trim whitespace
     camera=$(echo "$camera" | xargs)
 
-    echo "Processing camera: $camera"
+    echo "Processing camera: $camera ($current_camera/$total_cameras)"
 
     # Create snapshots directory if it doesn't exist
     snapshots_dir="./snapshots"
@@ -136,10 +133,38 @@ for camera in "${CAMERA_ARRAY[@]}"; do
     snapshot_file="$snapshots_dir/${camera}.jpg"
 
     # Download latest snapshot from Frigate
-    if run_with_spinner "curl -s -o \"$snapshot_file\" \"$FRIGATE_URL/api/$camera/latest.jpg\"" "Downloading snapshot"; then
-        echo "Downloaded latest snapshot for camera $camera"
-    else
-        echo "Error: Failed to download snapshot for camera $camera"
+    attempt=1
+    success=0
+    while [ $attempt -le 3 ]; do
+        echo "Attempt $attempt/3"
+        echo -n "Downloading snapshot "
+        curl -s -o "$snapshot_file" "$FRIGATE_URL/api/$camera/latest.jpg" > /dev/null 2>&1 &
+        pid=$!
+        delay=0.1
+        spinstr='|/-\'
+        while ps a | awk '{print $1}' | grep -q $pid; do
+            temp=${spinstr#?}
+            printf " [%c]  " "$spinstr"
+            spinstr=$temp${spinstr%"$temp"}
+            sleep $delay
+            printf "\b\b\b\b\b\b"
+        done
+        printf "    \b\b\b\b"
+        wait $pid
+        if [ $? -eq 0 ]; then
+            printf "✓\n"
+            success=1
+            break
+        else
+            printf "✗\n"
+            attempt=$((attempt + 1))
+            if [ $attempt -le 3 ]; then
+                sleep 2
+            fi
+        fi
+    done
+    if [ $success -eq 0 ]; then
+        echo "Downloading snapshot failed after 3 attempts"
         continue
     fi
 
@@ -150,12 +175,72 @@ for camera in "${CAMERA_ARRAY[@]}"; do
         continue
     fi
 
-    # Upload the file
-    if run_with_spinner "upload_file \"$snapshot_file\"" "Uploading snapshot"; then
-        echo "Upload successful for camera $camera"
+    # Add watermark with camera name and timestamp
+    DATE_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+    DATE_TIME_ESC=$(echo "$DATE_TIME" | sed 's/:/\\:/g')
+    camera_cap=$(echo "${camera:0:1}" | tr '[:lower:]' '[:upper:]')${camera:1}
+    if command -v ffmpeg >/dev/null 2>&1; then
+        temp_file="${snapshot_file%.*}_tmp.${snapshot_file##*.}"
+        echo -n "Adding watermark "
+        ffmpeg -y -i "$snapshot_file" -update 1 -frames:v 1 -vf "drawtext=text='$camera_cap':x=10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf, drawtext=text='$DATE_TIME_ESC':x=w-tw-10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" "$temp_file" > /dev/null 2>&1 &
+        pid=$!
+        delay=0.1
+        spinstr='|/-\'
+        while ps a | awk '{print $1}' | grep -q $pid; do
+            temp=${spinstr#?}
+            printf " [%c]  " "$spinstr"
+            spinstr=$temp${spinstr%"$temp"}
+            sleep $delay
+            printf "\b\b\b\b\b\b"
+        done
+        printf "    \b\b\b\b"
+        wait $pid
+        if [ $? -eq 0 ]; then
+            printf "✓\n"
+            mv "$temp_file" "$snapshot_file"
+        else
+            echo "Warning: Failed to add watermark, using original image"
+            rm -f "$temp_file"
+        fi
     else
-        echo "Upload failed for camera $camera"
+        echo "Warning: ffmpeg not found, skipping watermark"
     fi
+
+    # Upload the file
+    attempt=1
+    success=0
+    while [ $attempt -le 3 ]; do
+        echo "Attempt $attempt/3"
+        echo -n "Uploading snapshot "
+        upload_file "$snapshot_file" > /dev/null 2>&1 &
+        pid=$!
+        delay=0.1
+        spinstr='|/-\'
+        while ps a | awk '{print $1}' | grep -q $pid; do
+            temp=${spinstr#?}
+            printf " [%c]  " "$spinstr"
+            spinstr=$temp${spinstr%"$temp"}
+            sleep $delay
+            printf "\b\b\b\b\b\b"
+        done
+        printf "    \b\b\b\b"
+        wait $pid
+        if [ $? -eq 0 ]; then
+            printf "✓\n"
+            success=1
+            break
+        else
+            printf "✗\n"
+            attempt=$((attempt + 1))
+            if [ $attempt -le 3 ]; then
+                sleep 2
+            fi
+        fi
+    done
+    if [ $success -eq 0 ]; then
+        echo "Uploading snapshot failed after 3 attempts"
+    fi
+    current_camera=$((current_camera + 1))
 done
 
 echo "All cameras processed."

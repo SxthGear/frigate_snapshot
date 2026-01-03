@@ -447,51 +447,6 @@ grep -c "✓.*uploaded" ./frigate_snapshot.log
 curl -I http://your-frigate-server:5000/api/
 ```
 
-## 🤝 Contributing
-
-### Production Checklist
-Before deploying to production, ensure:
-
-- [ ] Test configuration with `-t` flag
-- [ ] Verify FTP/SFTP credentials work manually (FileZilla/Cyberduck)
-- [ ] Confirm Frigate API accessibility from your server
-- [ ] Test upload with all camera names
-- [ ] Verify file permissions on local and remote directories
-- [ ] Set appropriate file retention limits
-- [ ] Configure log rotation if needed
-- [ ] Test script execution in cron/systemd environment
-
-### Development Setup
-```bash
-# Clone repository
-git clone https://github.com/your-repo/frigate-upload
-cd frigate-upload
-
-# Install development dependencies
-sudo apt-get install shellcheck  # Ubuntu/Debian
-brew install shellcheck              # macOS
-
-# Run tests
-shellcheck frigate_upload.sh
-shellcheck frigate_config_builder.sh
-```
-
-### Code Style
-- Follow bash best practices
-- Use consistent error handling
-- Maintain clear logging
-- Add comprehensive comments
-- Test with shellcheck
-
-### Deployment Testing
-```bash
-# Test complete workflow
-chmod +x *.sh
-./frigate_config_builder.sh  # Create config
-./frigate_upload.sh -t          # Test configuration
-./frigate_upload.sh             # Run production
-```
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.

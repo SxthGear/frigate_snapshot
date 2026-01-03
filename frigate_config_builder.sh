@@ -3,7 +3,39 @@
 # Frigate Configuration Builder Script
 # Interactive menu-based configuration for Frigate snapshot uploads
 
+VERSION="2.1"
 CONFIG_FILE="config.txt"
+
+# Help and version
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo "Frigate Configuration v$VERSION"
+    echo "Interactive menu-based configuration for Frigate snapshot uploads."
+    echo ""
+    echo "Usage: $0 [--help|-h] [--version|-v]"
+    echo ""
+    echo "Options:"
+    echo "  --help, -h     Show this help message"
+    echo "  --version, -v  Show version"
+    echo ""
+    echo "Run without options to start configuration."
+    exit 0
+fi
+
+if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then
+    echo "Frigate Configuration v$VERSION"
+    exit 0
+fi
+
+# Dependency check
+echo "Checking dependencies..."
+deps=("curl" "wget")
+for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo "Error: $dep is required but not found."
+        exit 1
+    fi
+done
+echo "Dependencies OK."
 
 # Color codes for UI (if supported)
 RED='\033[0;31m'

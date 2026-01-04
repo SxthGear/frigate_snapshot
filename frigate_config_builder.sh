@@ -1,15 +1,13 @@
-#!/bin/bash
-
 # Frigate Configuration Builder Script
 # Interactive menu-based configuration for Frigate snapshot uploads
 
-VERSION="2.1"
+VERSION="3.0"
 CONFIG_FILE="config.txt"
 
 # Help and version
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Frigate Configuration v$VERSION"
-    echo "Interactive menu-based configuration for Frigate snapshot uploads."
+    echo "Interactive menu-based configuration for Frigate snapshot uploads with RTSP support."
     echo ""
     echo "Usage: $0 [--help|-h] [--version|-v]"
     echo ""
@@ -70,6 +68,8 @@ save_config() {
     {
         echo "FRIGATE_URL=$FRIGATE_URL"
         echo "CAMERAS=$CAMERAS"
+        echo "SOURCE=$SOURCE"
+        [ -n "$RTSP_BASE" ] && echo "RTSP_BASE=$RTSP_BASE"
         echo "METHOD=$METHOD"
         case $METHOD in
             POST)
@@ -179,6 +179,29 @@ configure_method() {
     esac
 }
 
+# Function to configure image source
+configure_source() {
+    local source_choice
+    print_color "$GREEN" "Select image source:"
+    echo "1) Frigate API (thumbnail still)"
+    echo "2) RTSP stream (live snapshot)"
+    read -r source_choice
+
+    case $source_choice in
+        1)
+            SOURCE="API"
+            ;;
+        2)
+            SOURCE="MJPEG"
+            print_color "$GREEN" "MJPEG will use the Frigate API over HTTP."
+            ;;
+        *)
+            print_color "$RED" "Invalid choice, defaulting to API"
+            SOURCE="API"
+            ;;
+    esac
+}
+
 # Load existing config
 load_config
 
@@ -192,14 +215,16 @@ while true; do
     print_color "$YELLOW" "Current Configuration:"
     echo "Frigate URL: ${FRIGATE_URL:-Not set}"
     echo "Cameras: ${CAMERAS:-Not set}"
+    echo "Image Source: ${SOURCE:-Not set}"
     echo "Upload Method: ${METHOD:-Not set}"
     echo
     print_color "$GREEN" "Menu:"
     echo "1) Edit Frigate URL"
     echo "2) Edit Camera Names"
-    echo "3) Edit Upload Method"
-    echo "4) Save and Exit"
-    echo "5) Exit without Saving"
+    echo "3) Edit Image Source"
+    echo "4) Edit Upload Method"
+    echo "5) Save and Exit"
+    echo "6) Exit without Saving"
     echo
     read -r choice
 
@@ -213,14 +238,17 @@ while true; do
             read -r CAMERAS
             ;;
         3)
-            configure_method
+            configure_source
             ;;
         4)
+            configure_method
+            ;;
+        5)
             save_config
             print_color "$GREEN" "Configuration saved to $CONFIG_FILE"
             exit 0
             ;;
-        5)
+        6)
             print_color "$YELLOW" "Exiting without saving."
             exit 0
             ;;

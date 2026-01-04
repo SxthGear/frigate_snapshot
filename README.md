@@ -163,7 +163,3 @@ Images are saved locally and uploaded with the camera name as filename (e.g., `d
 - Check network connectivity and firewall settings
 - For FTP issues, verify credentials and server permissions
 - Scripts use passive FTP mode for compatibility behind NAT/proxy
-
-## License
-
-[Add your license here]

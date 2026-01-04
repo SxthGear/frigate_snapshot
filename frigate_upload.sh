@@ -1,15 +1,31 @@
-#!/bin/bash
-
 # Frigate Upload Script
 # This script reads the configuration file and uploads images from Frigate cameras
 
-VERSION="2.1"
+VERSION="3.0"
 CONFIG_FILE="config.txt"
+
+# Color codes for UI (if supported)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to print colored text
+print_color() {
+    local color="$1"
+    local text="$2"
+    if command -v tput >/dev/null 2>&1 && [ -n "$TERM" ] && [ "$TERM" != "dumb" ]; then
+        echo -e "${color}${text}${NC}"
+    else
+        echo "$text"
+    fi
+}
 
 # Help and version
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Frigate Upload v$VERSION"
-    echo "Downloads latest snapshots from Frigate cameras, adds watermarks, and uploads."
+    echo "Downloads or captures snapshots from Frigate/API or RTSP, adds watermarks, and uploads."
     echo ""
     echo "Usage: $0 [--help|-h] [--version|-v]"
     echo ""
@@ -28,8 +44,8 @@ fi
 
 # Dependency check
 echo "Checking dependencies..."
-deps=("curl" "ffmpeg")
-for dep in "${deps[@]}"; do
+deps="curl ffmpeg"
+for dep in $deps; do
     if ! command -v "$dep" >/dev/null 2>&1; then
         echo "Error: $dep is required but not found."
         exit 1
@@ -37,7 +53,41 @@ for dep in "${deps[@]}"; do
 done
 echo "Dependencies OK."
 
+# Spinner function for progress indication
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
 
+# Retry function
+retry_simple() {
+    local message="$1"
+    local cmd="$2"
+    local max_attempts=3
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        echo "Attempt $attempt/$max_attempts for $message"
+        if eval "$cmd" > /dev/null 2>&1; then
+            echo "$message successful"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ $attempt -le $max_attempts ]; then
+            sleep 2
+        fi
+    done
+    echo "$message failed after $max_attempts attempts"
+    return 1
+}
 
 # Load configuration
 while IFS='=' read -r key value; do
@@ -75,8 +125,7 @@ upload_file() {
             else
                 FTP_PATH="/$FTP_PATH/"
             fi
-            ftp_url="ftp://$FTP_HOST$FTP_PATH$filename"
-            curl -s --user "$FTP_USER:$FTP_PASS" -T "$file_path" "$ftp_url" > /dev/null 2>&1
+            curl -s --user "$FTP_USER:$FTP_PASS" -T "$file_path" "ftp://$FTP_HOST$FTP_PATH$filename" > /dev/null 2>&1
             ;;
         SSH)
             if [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ]; then
@@ -133,40 +182,81 @@ for camera in "${CAMERA_ARRAY[@]}"; do
     snapshot_file="$snapshots_dir/${camera}.jpg"
 
     # Download latest snapshot from Frigate
+    SERVER_BASE=$(echo "$FRIGATE_URL" | sed 's|:\([0-9]*\)$||')
     attempt=1
     success=0
     while [ $attempt -le 3 ]; do
         echo "Attempt $attempt/3"
-        echo -n "Downloading snapshot "
-        curl -s -o "$snapshot_file" "$FRIGATE_URL/api/$camera/latest.jpg" > /dev/null 2>&1 &
-        pid=$!
-        delay=0.1
-        spinstr='|/-\'
-        while ps a | awk '{print $1}' | grep -q $pid; do
-            temp=${spinstr#?}
-            printf " [%c]  " "$spinstr"
-            spinstr=$temp${spinstr%"$temp"}
-            sleep $delay
-            printf "\b\b\b\b\b\b"
-        done
-        printf "    \b\b\b\b"
-        wait $pid
-        if [ $? -eq 0 ]; then
-            printf "✓\n"
-            success=1
-            break
+        if [ "$SOURCE" = "RTSP" ]; then
+            printf "Capturing snapshot from RTSP "
+            ffmpeg -y -rtsp_transport udp -ss 1 -fflags +discardcorrupt -avoid_negative_ts make_zero -i "$RTSP_BASE$camera" -vf scale=1920:1080 -frames:v 1 -q:v 2 "$snapshot_file" 2>&1
+            pid=$!
+            delay=0.1
+            spinstr='|/-\'
+            while ps a | awk '{print $1}' | grep -q $pid; do
+                temp=${spinstr#?}
+                printf " [%c]  " "$spinstr"
+                spinstr=$temp${spinstr%"$temp"}
+                sleep $delay
+                printf "\b\b\b\b\b\b"
+            done
+            printf "    \b\b\b\b"
+            wait $pid
+            if [ $? -eq 0 ]; then
+                printf "✓\n"
+                success=1
+            else
+                printf "✗\n"
+            fi
+        elif [ "$SOURCE" = "MJPEG" ]; then
+            printf "Downloading snapshot from MJPEG "
+            curl -s -o "$snapshot_file" "$SERVER_BASE:1984/api/frame.jpeg?src=$camera" > /dev/null 2>&1 &
+            pid=$!
+            delay=0.1
+            spinstr='|/-\'
+            while ps a | awk '{print $1}' | grep -q $pid; do
+                temp=${spinstr#?}
+                printf " [%c]  " "$spinstr"
+                spinstr=$temp${spinstr%"$temp"}
+                sleep $delay
+                printf "\b\b\b\b\b\b"
+            done
+            printf "    \b\b\b\b"
+            wait $pid
+            if [ $? -eq 0 ]; then
+                printf "✓\n"
+                success=1
+                break
+            else
+                printf "✗\n"
+            fi
         else
-            printf "✗\n"
-            attempt=$((attempt + 1))
-            if [ $attempt -le 3 ]; then
-                sleep 2
+            printf "Downloading snapshot "
+            curl -s -o "$snapshot_file" "$FRIGATE_URL/api/$camera/latest.jpg" > /dev/null 2>&1 &
+            pid=$!
+            delay=0.1
+            spinstr='|/-\'
+            while ps a | awk '{print $1}' | grep -q $pid; do
+                temp=${spinstr#?}
+                printf " [%c]  " "$spinstr"
+                spinstr=$temp${spinstr%"$temp"}
+                sleep $delay
+                printf "\b\b\b\b\b\b"
+            done
+            printf "    \b\b\b\b"
+            wait $pid
+            if [ $? -eq 0 ]; then
+                printf "✓\n"
+                success=1
+            else
+                printf "✗\n"
             fi
         fi
+        attempt=$((attempt + 1))
+        if [ $attempt -le 3 ]; then
+            sleep 2
+        fi
     done
-    if [ $success -eq 0 ]; then
-        echo "Downloading snapshot failed after 3 attempts"
-        continue
-    fi
 
     # Check if file exists and has content
     if [ ! -f "$snapshot_file" ] || [ ! -s "$snapshot_file" ]; then
@@ -181,8 +271,8 @@ for camera in "${CAMERA_ARRAY[@]}"; do
     camera_cap=$(echo "${camera:0:1}" | tr '[:lower:]' '[:upper:]')${camera:1}
     if command -v ffmpeg >/dev/null 2>&1; then
         temp_file="${snapshot_file%.*}_tmp.${snapshot_file##*.}"
-        echo -n "Adding watermark "
-        ffmpeg -y -i "$snapshot_file" -update 1 -frames:v 1 -vf "drawtext=text='$camera_cap':x=10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf, drawtext=text='$DATE_TIME_ESC':x=w-tw-10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" "$temp_file" > /dev/null 2>&1 &
+        printf "Adding watermark "
+        ffmpeg -y -i "$snapshot_file" -frames:v 1 -vf "drawtext=text='$camera_cap':x=10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf, drawtext=text='$DATE_TIME_ESC':x=w-tw-10:y=h-th-10:fontsize=24:fontcolor=white:bordercolor=black:borderw=2:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" "$temp_file" > /dev/null 2>&1 &
         pid=$!
         delay=0.1
         spinstr='|/-\'
@@ -199,6 +289,7 @@ for camera in "${CAMERA_ARRAY[@]}"; do
             printf "✓\n"
             mv "$temp_file" "$snapshot_file"
         else
+            printf "✗\n"
             echo "Warning: Failed to add watermark, using original image"
             rm -f "$temp_file"
         fi
@@ -211,7 +302,7 @@ for camera in "${CAMERA_ARRAY[@]}"; do
     success=0
     while [ $attempt -le 3 ]; do
         echo "Attempt $attempt/3"
-        echo -n "Uploading snapshot "
+        printf "Uploading snapshot "
         upload_file "$snapshot_file" > /dev/null 2>&1 &
         pid=$!
         delay=0.1
